@@ -1,5 +1,15 @@
 # CPS Automated Greenhouse System Using LangGraph
 
+
+## Key Features
+
+✅ **Multi-Agent Coordination**: Three agents working together
+✅ **Shared State Management**: TypedDict state flows through workflow
+✅ **Tool Use**: Agents use tools to interact with physical system
+✅ **Autonomous Decision-Making**: Each agent makes independent decisions
+✅ **Reactive Adaptation**: Workflow adapts based on system conditions
+✅ **CPS Integration**: Demonstrates bridge between digital agents and physical world
+
 ## Why LangGraph
 
 - **State Management:** Built-in state persistence across agent interactions enables seamless coordination between monitoring, control, and optimization agents without manual state handling.
@@ -28,6 +38,13 @@
 - **Graph wiring** - Sequential edges (monitor → control → optimize) with conditional routing (critical alerts loop back to monitor)
 
 - **Demo Run:** Executes 5 simulation cycles showing autonomous operation, state flow, and reactive adaptation
+
+### Workflow Graph
+```
+[Monitor] → [Control] → [Optimize] → (if critical) → [Monitor]
+                              ↓
+                            [END]
+```
 
 ## Setup & Run
 
@@ -266,6 +283,41 @@ When critical conditions are detected, the workflow adapts:
 [Monitoring Agent] Reading sensors...  ← Immediate re-monitoring due to critical alert
   [2025-11-04 14:38:04] Temp: 18.91°C, Humidity: 70.26%, Soil: 52.57%, Light: 2795.77 lux
 ```
+
+## Agentic AI Stack Mapping
+
+### 1. Planning Layer
+- **LangGraph StateGraph**: Defines the overall workflow structure
+- **Nodes**: Each agent is a node in the graph
+- **Edges**: Define the flow of control between agents
+- **Conditional Edges**: Enable dynamic routing based on system state
+
+### 2. Execution Layer
+- **Agent Nodes**: Three specialized agents execute their respective tasks
+- **Tools**: LangChain tools interface with physical CPS components
+  - Sensor tools: `read_temperature()`, `read_humidity()`, etc.
+  - Actuator tools: `set_heater()`, `set_fan()`, etc.
+- **Autonomous Operation**: Each agent makes decisions independently
+
+### 3. Memory Layer
+- **Shared State** (`GreenhouseState` TypedDict):
+  - Current sensor readings
+  - Actuator states
+  - Target parameters
+  - Agent logs and messages
+  - System status and alerts
+- **State Persistence**: State flows through the graph, enabling agent coordination
+
+### 4. Feedback Layer
+- **Continuous Monitoring**: Monitoring agent continuously updates state
+- **Control Feedback**: Control actions affect environment, which is sensed again
+- **Adaptive Optimization**: Optimization agent adjusts targets based on performance
+- **Alert-Driven Adaptation**: Critical conditions trigger workflow rerouting
+
+### 5. Tool Layer
+- **Sensor Tools**: Bridge to physical sensors (simulated in this demo)
+- **Actuator Tools**: Bridge to physical actuators (simulated in this demo)
+- **CPS Interface**: Tools represent the boundary between digital agents and physical world
 
 ### Mermaid Diagram
 
