@@ -382,7 +382,7 @@ When critical conditions are detected, the workflow adapts:
 
 **More diagrams can be found at [diagrams.md](https://github.com/ranadubauskas/agentic-demo/blob/main/diagrams.md)**
 
-Core Workflow Diagram:
+**Core Workflow Diagram:**
 ```mermaid
 graph TB
     Start([System Start]) --> Monitor[Monitoring Agent]
