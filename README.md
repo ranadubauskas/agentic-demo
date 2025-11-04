@@ -21,9 +21,9 @@
 - **Actuator Tools** (`set_heater`, `set_fan`, `set_water_pump`, `set_grow_lights`) - Interface for controlling physical devices
 
 - **Nodes:** 
-  - Monitoring Agent - Reads sensors, detects anomalies, sets alert levels
-  - Control Agent - Makes real-time decisions, controls actuators based on sensor readings vs. targets
-  - Optimization Agent - Analyzes performance, adjusts target parameters for efficiency
+  - **Monitoring Agent** - Reads sensors, detects anomalies, sets alert levels
+  - **Control Agent** - Makes real-time decisions, controls actuators based on sensor readings vs. targets
+  - **Optimization Agent** - Analyzes performance, adjusts target parameters for efficiency
 
 - **Graph wiring** - Sequential edges (monitor → control → optimize) with conditional routing (critical alerts loop back to monitor)
 
