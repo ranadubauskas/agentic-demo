@@ -5,10 +5,12 @@ Demonstrates multi-agent coordination for Cyber-Physical Systems
 
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
+# from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from langchain.tools import tool
 import random
 from datetime import datetime
+import json
 
 
 # ==================== State Definition ====================
@@ -195,15 +197,18 @@ class MonitoringAgent:
 class ControlAgent:
     """
     Agent 2: Control Agent
-    Makes real-time control decisions based on sensor readings
+    Uses the LLM as a policy to choose actuator states based on sensor readings.
+    Falls back to deterministic rules if no LLM or invalid output.
     """
 
     def __init__(self, llm):
         self.llm = llm
         self.tools = [set_heater, set_fan, set_water_pump, set_grow_lights]
 
-    def __call__(self, state: GreenhouseState) -> GreenhouseState:
-        print("\n[Control Agent] Evaluating control actions...")
+    # ---- deterministic fallback (your old rule-based policy) ----
+    def _fallback_policy(self, state: GreenhouseState) -> GreenhouseState:
+        print("\n[Control Agent] Fallback deterministic control policy...")
+
         temp = state["temperature"]
         humidity = state["humidity"]
         soil = state["soil_moisture"]
@@ -213,14 +218,15 @@ class ControlAgent:
         target_soil = state["target_soil_moisture"]
 
         actions = []
-        reasons = []  # NEW: collect human-readable reasons
+        reasons = []
 
         # Temperature control
         if temp < target_temp - 2:
             state["heater_on"] = True
+            state["fan_on"] = False
             actions.append(set_heater.invoke({"state": True}))
+            actions.append(set_fan.invoke({"state": False}))
             reasons.append(f"Heater ON because T={temp} < {target_temp-2} (target-2)")
-            # fan: keep as-is unless other rules flip it
         elif temp > target_temp + 2:
             state["heater_on"] = False
             state["fan_on"] = True
@@ -234,18 +240,18 @@ class ControlAgent:
             actions.append(set_fan.invoke({"state": False}))
             reasons.append(f"T in band [{target_temp-2},{target_temp+2}] → Heater OFF, Fan OFF")
 
-        # Humidity control (can override Fan)
+        # Humidity
         if humidity > target_humid + 5:
             state["fan_on"] = True
             actions.append(set_fan.invoke({"state": True}))
             reasons.append(f"Fan ON due to RH={humidity} > {target_humid+5} (target+5)")
 
-        # Soil moisture control
+        # Soil moisture
         if soil < target_soil - 5:
             state["water_pump_on"] = True
             actions.append(set_water_pump.invoke({"state": True}))
             prev_soil = state["soil_moisture"]
-            state["soil_moisture"] = min(100, state["soil_moisture"] + 15)  # simulate watering effect
+            state["soil_moisture"] = min(100, state["soil_moisture"] + 15)
             reasons.append(
                 f"Pump ON because soil={soil} < {target_soil-5}; soil {prev_soil}→{state['soil_moisture']}"
             )
@@ -264,22 +270,200 @@ class ControlAgent:
             actions.append(set_grow_lights.invoke({"state": False}))
             reasons.append(f"Lights OFF because light={light} ≥ 1000 lux")
 
-        log_entry = f"[{state['timestamp']}] Control actions: {', '.join(actions)}"
+        log_entry = f"[{state['timestamp']}] Control actions (fallback): {', '.join(actions)}"
         why_entry = (
-            f"[{state['timestamp']}] Reasons:\n"
+            f"[{state['timestamp']}] Reasons (fallback):\n"
             + "\n".join(f"  • {r}" for r in reasons)
         )
 
         state["control_agent_log"].append(log_entry)
-        state["control_agent_log"].append(why_entry)  # keep paired with actions
+        state["control_agent_log"].append(why_entry)
         state["messages"].append(f"Control: {log_entry}")
-        state["messages"].append(f"ControlWhy: {why_entry}")  # optional bus msg
+        state["messages"].append(f"ControlWhy: {why_entry}")
 
         print(f"  {log_entry}")
-        print(f"  {why_entry}")  # visible in console
+        print(f"  {why_entry}")
 
         return state
 
+    # ---- main LLM policy ----
+    def __call__(self, state: GreenhouseState) -> GreenhouseState:
+        # If no LLM, just use the deterministic policy
+        if self.llm is None:
+            return self._fallback_policy(state)
+
+        print("\n[Control Agent] Evaluating control actions via LLM policy...")
+
+        recent_monitor = state["monitoring_agent_log"][-3:]
+        recent_control = state["control_agent_log"][-3:]
+        recent_history = "\n".join(recent_monitor + recent_control) or "No prior history (first cycle)."
+
+        temp = state["temperature"]
+        humidity = state["humidity"]
+        soil = state["soil_moisture"]
+        light = state["light_level"]
+
+        target_temp = state["target_temperature"]
+        target_humid = state["target_humidity"]
+        target_soil = state["target_soil_moisture"]
+        target_light_hours = state["target_light_hours"]
+
+        # build a strict JSON-output prompt
+        prompt = f"""
+You are an autonomous control agent for an automated greenhouse cyber-physical system.
+
+YOUR OBJECTIVES (in order of priority):
+1. Keep plants within safe environmental ranges (avoid stressing or killing them).
+2. Stay reasonably close to the target setpoints over time (good growing conditions).
+3. Minimize energy use (heater, fan, grow lights) and water use (pump).
+4. Avoid rapid oscillation (toggling actuators on/off every cycle without need).
+
+You are given:
+- Current sensor readings:
+  - temperature_c: {temp}
+  - humidity_percent: {humidity}
+  - soil_moisture_percent: {soil}
+  - light_level_lux: {light}
+
+- Current control targets:
+  - target_temperature_c: {target_temp}
+  - target_humidity_percent: {target_humid}
+  - target_soil_moisture_percent: {target_soil}
+  - target_light_hours: {target_light_hours}
+
+- Previous alert_level: {state.get("alert_level", "normal")}
+
+- Recent history (monitoring + control logs, most recent last):
+{recent_history}
+
+INTERPRETATION GUIDELINES (YOU choose exact thresholds):
+- "normal": all readings are safe for plants and roughly near targets.
+- "warning": readings are drifting away from targets or trending in a bad direction,
+             but not yet immediately dangerous.
+- "critical": readings are unsafe for plants OR require urgent strong action.
+
+You are free to:
+- Keep actuators OFF if conditions are already good and stable.
+- Turn actuators ON preemptively if readings are moving toward unsafe ranges.
+- Leave actuators as they are to avoid unnecessary toggling.
+- Escalate alert_level if you believe the situation is warning or critical,
+  based on both current readings and recent history.
+
+You MUST respond with ONLY a valid JSON object with these keys:
+  "heater_on": true or false,
+  "fan_on": true or false,
+  "water_pump_on": true or false,
+  "grow_lights_on": true or false,
+  "alert_level": one of "normal", "warning", "critical",
+  "reason": a short human-readable explanation string.
+
+The "reason" should briefly explain:
+- why you chose these actuator settings,
+- what trade-offs you made (plant safety vs. energy/water vs. stability),
+- and any trend you noticed from the recent history (if relevant).
+
+Return JSON only. No backticks, no code fences, no extra commentary.
+"""
+        try:
+            llm_result = self.llm.invoke(prompt)
+            raw = getattr(llm_result, "content", str(llm_result)).strip()
+              # --- NEW: strip ```json fences if present ---
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1:
+                raise ValueError("LLM output did not contain a JSON object")
+
+            json_str = raw[start : end + 1]
+
+            decision = json.loads(json_str)
+        except Exception as e:
+            print(f"  [LLM Control ERROR] {e}")
+            print(f"  [LLM Raw Response] {locals().get('raw', 'N/A')}")
+            return self._fallback_policy(state)
+
+        # Extract booleans with safe defaulting
+        heater_on = bool(decision.get("heater_on", state.get("heater_on", False)))
+        fan_on = bool(decision.get("fan_on", state.get("fan_on", False)))
+        pump_on = bool(decision.get("water_pump_on", state.get("water_pump_on", False)))
+        lights_on = bool(decision.get("grow_lights_on", state.get("grow_lights_on", False)))
+        alert_level = decision.get("alert_level", state.get("alert_level", "normal"))
+        reason = decision.get("reason", "LLM policy decision")
+
+        # Update state
+        state["heater_on"] = heater_on
+        state["fan_on"] = fan_on
+        state["water_pump_on"] = pump_on
+        state["grow_lights_on"] = lights_on
+        state["alert_level"] = alert_level
+
+        # Simulate physical effect of watering (optional, same as before)
+        if pump_on:
+            prev_soil = state["soil_moisture"]
+            state["soil_moisture"] = min(100, state["soil_moisture"] + 15)
+        else:
+            prev_soil = state["soil_moisture"]
+
+        # Call tools (this is your “actuator interface”)
+        actions = []
+        actions.append(set_heater.invoke({"state": heater_on}))
+        actions.append(set_fan.invoke({"state": fan_on}))
+        actions.append(set_water_pump.invoke({"state": pump_on}))
+        actions.append(set_grow_lights.invoke({"state": lights_on}))
+
+        log_entry = f"[{state['timestamp']}] Control actions (LLM): {', '.join(actions)}"
+        why_entry = (
+            f"[{state['timestamp']}] LLM Reason: {reason} "
+            f"(alert_level={alert_level}, soil_before={prev_soil}, soil_after={state['soil_moisture']})"
+        )
+
+        state["control_agent_log"].append(log_entry)
+        state["control_agent_log"].append(why_entry)
+        state["messages"].append(f"Control: {log_entry}")
+        state["messages"].append(f"ControlWhy: {why_entry}")
+
+        print(f"  {log_entry}")
+        print(f"  {why_entry}")
+
+        return state
+
+
+# class OptimizationAgent:
+#     """
+#     Agent 3: Optimization Agent
+#     Analyzes historical data and optimizes target parameters
+#     """
+
+#     def __init__(self, llm):
+#         self.llm = llm
+
+#     def __call__(self, state: GreenhouseState) -> GreenhouseState:
+#         """Optimize target parameters based on plant health and efficiency"""
+#         print("\n[Optimization Agent] Analyzing performance...")
+
+#         # Analyze recent readings and control actions
+#         temp = state["temperature"]
+#         recent_actions = len([m for m in state["control_agent_log"][-5:] if "ON" in m])
+
+#         # Adaptive optimization logic
+#         if recent_actions > 3:
+#             if abs(temp - state["target_temperature"]) < 1:
+#                 state["target_temperature"] = round(state["target_temperature"] + 0.5, 1)
+#                 optimization = "Adjusted target temp for efficiency"
+#                 why = f"recent_actions={recent_actions} (>3) and |T-Target|<1"
+#             else:
+#                 optimization = "System operating efficiently"
+#                 why = f"recent_actions={recent_actions} but |T-Target|≥1"
+#         else:
+#             optimization = "System stable, no optimization needed"
+#             why = f"recent_actions={recent_actions} (≤3)"
+
+#         log_entry = f"[{state['timestamp']}] {optimization} ({why})"
+#         state["optimization_agent_log"].append(log_entry)
+#         state["messages"].append(f"Optimization: {log_entry}")
+
+#         print(f"  {log_entry}")
+
+#         return state
 
 class OptimizationAgent:
     """
@@ -290,15 +474,12 @@ class OptimizationAgent:
     def __init__(self, llm):
         self.llm = llm
 
-    def __call__(self, state: GreenhouseState) -> GreenhouseState:
-        """Optimize target parameters based on plant health and efficiency"""
-        print("\n[Optimization Agent] Analyzing performance...")
-
-        # Analyze recent readings and control actions
+    def _fallback_optimize(self, state: GreenhouseState) -> GreenhouseState:
+        """Old deterministic optimization policy (safety fallback)"""
+        print("\n[Optimization Agent] Deterministic optimization...")
         temp = state["temperature"]
         recent_actions = len([m for m in state["control_agent_log"][-5:] if "ON" in m])
 
-        # Adaptive optimization logic
         if recent_actions > 3:
             if abs(temp - state["target_temperature"]) < 1:
                 state["target_temperature"] = round(state["target_temperature"] + 0.5, 1)
@@ -316,9 +497,128 @@ class OptimizationAgent:
         state["messages"].append(f"Optimization: {log_entry}")
 
         print(f"  {log_entry}")
-
         return state
 
+    def __call__(self, state: GreenhouseState) -> GreenhouseState:
+        """Optimize target parameters based on plant health, comfort & efficiency"""
+        print("\n[Optimization Agent] Analyzing performance...")
+
+        # If no LLM configured, fall back to deterministic
+        if self.llm is None:
+            return self._fallback_optimize(state)
+
+        # Collect context for the LLM
+        current_targets = {
+            "target_temperature": state["target_temperature"],
+            "target_humidity": state["target_humidity"],
+            "target_soil_moisture": state["target_soil_moisture"],
+            "target_light_hours": state["target_light_hours"],
+        }
+
+        recent_monitor = "\n".join(state["monitoring_agent_log"][-10:]) or "No monitoring logs."
+        recent_control = "\n".join(state["control_agent_log"][-10:]) or "No control logs."
+
+        prompt = f"""
+You are the optimization agent for an automated greenhouse CPS.
+
+Your job is to periodically adjust the control setpoints to balance:
+- plant health and comfort,
+- energy efficiency (heater, fan, lights),
+- water efficiency (pump),
+- and actuator wear (avoid excessive ON/OFF cycling).
+
+You are given:
+- Current targets:
+  - target_temperature_c: {current_targets['target_temperature']}
+  - target_humidity_percent: {current_targets['target_humidity']}
+  - target_soil_moisture_percent: {current_targets['target_soil_moisture']}
+  - target_light_hours: {current_targets['target_light_hours']}
+
+- Recent monitoring logs (oldest to newest):
+{recent_monitor}
+
+- Recent control logs (oldest to newest):
+{recent_control}
+
+General guidelines (but you may deviate with justification):
+- Comfortable greenhouse temps are typically in roughly the 18–28°C range.
+- Humidity around 50–70% is often acceptable for many plants.
+- Soil moisture should not stay at extremes (0–10% or 90–100%) for long.
+- More actuator ON time => higher energy/water usage; consider relaxing targets slightly.
+
+Respond ONLY with JSON:
+{{
+  "target_temperature": <float, new target temp in °C>,
+  "target_humidity": <float, new target humidity in %>,
+  "target_soil_moisture": <float, new target soil moisture in %>,
+  "target_light_hours": <int, new target daily light hours>,
+  "reason": "<short explanation of trade-offs and why you changed or kept each target>"
+}}
+"""
+
+        try:
+            llm_result = self.llm.invoke(prompt)
+            raw = getattr(llm_result, "content", str(llm_result)).strip()
+
+            # slice JSON
+            s = raw.find("{")
+            e = raw.rfind("}")
+            if s == -1 or e == -1:
+                raise ValueError("LLM output did not contain a JSON object")
+            json_str = raw[s : e + 1]
+
+            decision = json.loads(json_str)
+        except Exception as e:
+            print(f"  [Optimization LLM ERROR] {e}")
+            print(f"  [Optimization LLM Raw] {locals().get('raw', 'N/A')}")
+            return self._fallback_optimize(state)
+
+        # Safely apply new targets with clamping
+        def clamp(val, lo, hi, default):
+            try:
+                v = float(val)
+            except Exception:
+                return default
+            return max(lo, min(hi, v))
+
+        new_temp = clamp(decision.get("target_temperature", current_targets["target_temperature"]),
+                         10.0, 35.0, current_targets["target_temperature"])
+        new_humid = clamp(decision.get("target_humidity", current_targets["target_humidity"]),
+                          20.0, 90.0, current_targets["target_humidity"])
+        new_soil = clamp(decision.get("target_soil_moisture", current_targets["target_soil_moisture"]),
+                         10.0, 90.0, current_targets["target_soil_moisture"])
+        try:
+            new_light_hours = int(decision.get("target_light_hours", current_targets["target_light_hours"]))
+            new_light_hours = max(4, min(20, new_light_hours))
+        except Exception:
+            new_light_hours = current_targets["target_light_hours"]
+
+        reason = decision.get("reason", "LLM optimization decision")
+
+        # Apply to state
+        state["target_temperature"] = round(new_temp, 1)
+        state["target_humidity"] = round(new_humid, 1)
+        state["target_soil_moisture"] = round(new_soil, 1)
+        state["target_light_hours"] = new_light_hours
+
+        log_entry = (
+            f"[{state['timestamp']}] LLM optimization: "
+            f"T={state['target_temperature']}°C, "
+            f"RH={state['target_humidity']}%, "
+            f"Soil={state['target_soil_moisture']}%, "
+            f"LightHours={state['target_light_hours']}"
+        )
+        why_entry = f"[{state['timestamp']}] LLM optimization reason: {reason}"
+
+        state["optimization_agent_log"].append(log_entry)
+        state["optimization_agent_log"].append(why_entry)
+        state["messages"].append(f"Optimization: {log_entry}")
+        state["messages"].append(f"OptimizationWhy: {why_entry}")
+
+        print(f"  {log_entry}")
+        print(f"  {why_entry}")
+
+        return state
 
 # ==================== LangGraph Workflow Definition ====================
 def create_greenhouse_workflow():
@@ -335,7 +635,7 @@ def create_greenhouse_workflow():
     # LLM can be used for advanced decision-making, but not required for this demo
     # The agents use deterministic logic, but LLM can enhance decision-making
     try:
-        llm = ChatOpenAI(model="gpt-4", temperature=0)
+        llm = ChatOllama(model="llama3.1", temperature=0)
     except Exception:
         llm = None  # Will work with deterministic agents
 
