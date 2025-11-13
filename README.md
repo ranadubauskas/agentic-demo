@@ -1,4 +1,4 @@
-# CPS Automated Greenhouse System Using LangGraph
+# CPS Automated Greenhouse System Using LangGraph & Ollama LLM
 
 ## Key Features
 
