@@ -426,45 +426,6 @@ Return JSON only. No backticks, no code fences, no extra commentary.
 
         return state
 
-
-# class OptimizationAgent:
-#     """
-#     Agent 3: Optimization Agent
-#     Analyzes historical data and optimizes target parameters
-#     """
-
-#     def __init__(self, llm):
-#         self.llm = llm
-
-#     def __call__(self, state: GreenhouseState) -> GreenhouseState:
-#         """Optimize target parameters based on plant health and efficiency"""
-#         print("\n[Optimization Agent] Analyzing performance...")
-
-#         # Analyze recent readings and control actions
-#         temp = state["temperature"]
-#         recent_actions = len([m for m in state["control_agent_log"][-5:] if "ON" in m])
-
-#         # Adaptive optimization logic
-#         if recent_actions > 3:
-#             if abs(temp - state["target_temperature"]) < 1:
-#                 state["target_temperature"] = round(state["target_temperature"] + 0.5, 1)
-#                 optimization = "Adjusted target temp for efficiency"
-#                 why = f"recent_actions={recent_actions} (>3) and |T-Target|<1"
-#             else:
-#                 optimization = "System operating efficiently"
-#                 why = f"recent_actions={recent_actions} but |T-Target|≥1"
-#         else:
-#             optimization = "System stable, no optimization needed"
-#             why = f"recent_actions={recent_actions} (≤3)"
-
-#         log_entry = f"[{state['timestamp']}] {optimization} ({why})"
-#         state["optimization_agent_log"].append(log_entry)
-#         state["messages"].append(f"Optimization: {log_entry}")
-
-#         print(f"  {log_entry}")
-
-#         return state
-
 class OptimizationAgent:
     """
     Agent 3: Optimization Agent
