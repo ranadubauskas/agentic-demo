@@ -5,7 +5,6 @@ Demonstrates multi-agent coordination for Cyber-Physical Systems
 
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
-# from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain.tools import tool
 import random
@@ -793,16 +792,10 @@ def print_agentic_stack_analysis():
 
 
 if __name__ == "__main__":
-    # Note: Requires OPENAI_API_KEY environment variable
     import os
     from dotenv import load_dotenv
 
     load_dotenv()
-
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Note: OPENAI_API_KEY not set.")
-        print("The system will work with deterministic agents (no LLM required).")
-        print("Set your API key in a .env file for enhanced LLM-based decision-making.\n")
 
     try:
         run_demo()
